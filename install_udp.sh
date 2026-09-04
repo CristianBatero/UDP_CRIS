@@ -659,36 +659,77 @@ get_latest_version() {
         return
     fi
 
+    # Versión de Hysteria V1 conocida compatible con libfarikudp.so (CRISDEV-UDP)
+    # Se usa como fallback si la API de GitHub no responde (firewall, rate-limit, DNS).
+    local FALLBACK_VERSION="v1.3.5"
+
     local _tmpfile=$(mktemp)
-    if ! curl -sS -H 'Accept: application/vnd.github.v3+json' "$API_BASE_URL/releases/latest" -o "$_tmpfile"; then
-        error "Failed to get latest release, please check your network."
-        exit 11
+    if ! curl -sS --connect-timeout 8 --max-time 15 \
+         -H 'Accept: application/vnd.github.v3+json' \
+         "$API_BASE_URL/releases/latest" -o "$_tmpfile" 2>/dev/null; then
+        warning "No se pudo contactar GitHub API. Usando versión estable conocida: $FALLBACK_VERSION"
+        rm -f "$_tmpfile"
+        echo "$FALLBACK_VERSION"
+        return
     fi
 
-    local _latest_version=$(grep 'tag_name' "$_tmpfile" | head -1 | grep -o '"v.*"')
+    local _latest_version=$(grep 'tag_name' "$_tmpfile" | head -1 | grep -o '"v[^"]*"')
     _latest_version=${_latest_version#'"'}
     _latest_version=${_latest_version%'"'}
 
+    rm -f "$_tmpfile"
+
     if [[ -n "$_latest_version" ]]; then
         echo "$_latest_version"
+    else
+        warning "Respuesta de GitHub API inválida. Usando versión estable conocida: $FALLBACK_VERSION"
+        echo "$FALLBACK_VERSION"
     fi
-
-    rm -f "$_tmpfile"
 }
 
 download_hysteria() {
     local _version="$1"
     local _destination="$2"
-    local _download_url="$REPO_URL/releases/download/$_version/hysteria-$OPERATING_SYSTEM-$ARCHITECTURE"
-    echo "Downloading hysteria binary: $_download_url ..."
-    if ! curl -R -H 'Cache-Control: no-cache' "$_download_url" -o "$_destination"; then
-        error "Download failed! Please check your network and try again."
-        return 11
-    fi
-    return 0
+
+    # URLs de descarga del binario Hysteria V1 (en orden de preferencia)
+    # Si github.com no es accesible desde el VPS, se prueban mirrors alternativos.
+    local _filename="hysteria-$OPERATING_SYSTEM-$ARCHITECTURE"
+    local _urls=(
+        "$REPO_URL/releases/download/$_version/$_filename"
+        "https://objects.githubusercontent.com/github-production-release-asset-2e65be/apernet/hysteria/${_version}/${_filename}"
+        "https://ghproxy.com/$REPO_URL/releases/download/$_version/$_filename"
+        "https://mirror.ghproxy.com/$REPO_URL/releases/download/$_version/$_filename"
+    )
+
+    for _url in "${_urls[@]}"; do
+        echo "Downloading hysteria binary: $_url ..."
+        if curl -R --connect-timeout 15 --max-time 120 \
+                -H 'Cache-Control: no-cache' "$_url" -o "$_destination" 2>/dev/null; then
+            # Verificar que el archivo descargado es un ejecutable ELF (no una página HTML de error)
+            if file "$_destination" 2>/dev/null | grep -q "ELF"; then
+                echo "Binario descargado correctamente desde: $_url"
+                return 0
+            else
+                warning "El archivo descargado no es un binario válido (posiblemente error HTTP). Probando siguiente URL..."
+                rm -f "$_destination"
+            fi
+        else
+            warning "Falló la descarga desde: $_url"
+        fi
+    done
+
+    error "No se pudo descargar el binario hysteria desde ninguna URL."
+    error "Opciones manuales:"
+    error "  1. Descarga el binario manualmente y usa: ./install_udp.sh -l /ruta/al/binario"
+    error "  2. URL directa: $REPO_URL/releases/download/$_version/$_filename"
+    return 11
 }
 
 check_update() {
+    # RETURN VALUE
+    # 0: update available (o instalación necesaria)
+    # 1: installed version is latest
+
     echo -ne "Checking for installed version ... "
     local _installed_version="$(get_installed_version)"
     if [[ -n "$_installed_version" ]]; then
@@ -703,8 +744,16 @@ check_update() {
         echo "$_latest_version"
         VERSION="$_latest_version"
     else
-        echo "failed"
-        return 1
+        # Nunca debería llegar aquí (get_latest_version siempre retorna algo),
+        # pero por seguridad forzamos instalación.
+        echo "unknown — forcing install"
+        VERSION="v1.3.5"
+        return 0
+    fi
+
+    # Si no está instalado, siempre necesita instalación
+    if [[ -z "$_installed_version" ]]; then
+        return 0
     fi
 
     local _vercmp="$(vercmp "$_installed_version" "$_latest_version")"
