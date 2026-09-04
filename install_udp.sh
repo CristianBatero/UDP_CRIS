@@ -660,14 +660,15 @@ get_latest_version() {
     fi
 
     # Versión de Hysteria V1 conocida compatible con libfarikudp.so (CRISDEV-UDP)
-    # Se usa como fallback si la API de GitHub no responde (firewall, rate-limit, DNS).
+    # FALLBACK cuando GitHub API no responde.
+    # TODOS los mensajes van a stderr (&2) para no contaminar el valor capturado por $(...).
     local FALLBACK_VERSION="v1.3.5"
 
     local _tmpfile=$(mktemp)
     if ! curl -sS --connect-timeout 8 --max-time 15 \
          -H 'Accept: application/vnd.github.v3+json' \
          "$API_BASE_URL/releases/latest" -o "$_tmpfile" 2>/dev/null; then
-        warning "No se pudo contactar GitHub API. Usando versión estable conocida: $FALLBACK_VERSION"
+        echo "warning: GitHub API no disponible. Usando version: $FALLBACK_VERSION" >&2
         rm -f "$_tmpfile"
         echo "$FALLBACK_VERSION"
         return
@@ -682,7 +683,7 @@ get_latest_version() {
     if [[ -n "$_latest_version" ]]; then
         echo "$_latest_version"
     else
-        warning "Respuesta de GitHub API inválida. Usando versión estable conocida: $FALLBACK_VERSION"
+        echo "warning: Respuesta API invalida. Usando version: $FALLBACK_VERSION" >&2
         echo "$FALLBACK_VERSION"
     fi
 }
@@ -690,45 +691,50 @@ get_latest_version() {
 download_hysteria() {
     local _version="$1"
     local _destination="$2"
-
-    # URLs de descarga del binario Hysteria V1 (en orden de preferencia)
-    # Si github.com no es accesible desde el VPS, se prueban mirrors alternativos.
     local _filename="hysteria-$OPERATING_SYSTEM-$ARCHITECTURE"
+
+    # URLs de descarga en orden de preferencia.
+    # Si el VPS no accede a github.com, los mirrors ghproxy/kkgithub suelen funcionar.
     local _urls=(
-        "$REPO_URL/releases/download/$_version/$_filename"
-        "https://objects.githubusercontent.com/github-production-release-asset-2e65be/apernet/hysteria/${_version}/${_filename}"
-        "https://ghproxy.com/$REPO_URL/releases/download/$_version/$_filename"
-        "https://mirror.ghproxy.com/$REPO_URL/releases/download/$_version/$_filename"
+        "https://github.com/apernet/hysteria/releases/download/${_version}/${_filename}"
+        "https://kkgithub.com/apernet/hysteria/releases/download/${_version}/${_filename}"
+        "https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/${_version}/${_filename}"
+        "https://mirror.ghproxy.com/https://github.com/apernet/hysteria/releases/download/${_version}/${_filename}"
+        "https://hub.gitmirror.com/https://github.com/apernet/hysteria/releases/download/${_version}/${_filename}"
     )
 
     for _url in "${_urls[@]}"; do
         echo "Downloading hysteria binary: $_url ..."
-        if curl -R --connect-timeout 15 --max-time 120 \
-                -H 'Cache-Control: no-cache' "$_url" -o "$_destination" 2>/dev/null; then
-            # Verificar que el archivo descargado es un ejecutable ELF (no una página HTML de error)
-            if file "$_destination" 2>/dev/null | grep -q "ELF"; then
-                echo "Binario descargado correctamente desde: $_url"
+        if curl -L --connect-timeout 15 --max-time 120 \
+                -H 'Cache-Control: no-cache' \
+                -o "$_destination" "$_url" 2>/dev/null; then
+            # Verificar que el archivo descargado es un binario ELF real, no una página HTML de error
+            if [[ -f "$_destination" ]] && file "$_destination" 2>/dev/null | grep -q "ELF"; then
+                echo "Binario descargado correctamente."
                 return 0
             else
-                warning "El archivo descargado no es un binario válido (posiblemente error HTTP). Probando siguiente URL..."
+                local _size=$(wc -c < "$_destination" 2>/dev/null || echo 0)
+                echo "warning: Archivo descargado inválido (tamaño: ${_size} bytes, no es ELF). Probando siguiente URL..." >&2
                 rm -f "$_destination"
             fi
         else
-            warning "Falló la descarga desde: $_url"
+            echo "warning: Descarga fallida desde: $_url" >&2
+            rm -f "$_destination"
         fi
     done
 
-    error "No se pudo descargar el binario hysteria desde ninguna URL."
-    error "Opciones manuales:"
-    error "  1. Descarga el binario manualmente y usa: ./install_udp.sh -l /ruta/al/binario"
-    error "  2. URL directa: $REPO_URL/releases/download/$_version/$_filename"
+    error "No se pudo descargar el binario hysteria."
+    error "Instala manualmente:"
+    error "  wget https://github.com/apernet/hysteria/releases/download/${_version}/${_filename}"
+    error "  chmod +x ${_filename}"
+    error "  ./install_udp.sh -l ./${_filename}"
     return 11
 }
 
 check_update() {
     # RETURN VALUE
-    # 0: update available (o instalación necesaria)
-    # 1: installed version is latest
+    # 0: instalación necesaria
+    # 1: ya está en la versión más reciente
 
     echo -ne "Checking for installed version ... "
     local _installed_version="$(get_installed_version)"
@@ -739,19 +745,21 @@ check_update() {
     fi
 
     echo -ne "Checking for latest version ... "
-    local _latest_version="$(get_latest_version)"
+    # get_latest_version solo imprime la versión en stdout; warnings van a stderr
+    local _latest_version
+    _latest_version="$(get_latest_version 2>/dev/null)"
+    # Limpiar el valor: quedarse solo con el token que empieza con 'v'
+    _latest_version=$(echo "$_latest_version" | grep -o 'v[0-9][^ ]*' | head -1)
+
     if [[ -n "$_latest_version" ]]; then
         echo "$_latest_version"
         VERSION="$_latest_version"
     else
-        # Nunca debería llegar aquí (get_latest_version siempre retorna algo),
-        # pero por seguridad forzamos instalación.
-        echo "unknown — forcing install"
+        echo "unknown — usando v1.3.5"
         VERSION="v1.3.5"
-        return 0
     fi
 
-    # Si no está instalado, siempre necesita instalación
+    # Si no está instalado: siempre necesita instalación
     if [[ -z "$_installed_version" ]]; then
         return 0
     fi
