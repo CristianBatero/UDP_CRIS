@@ -93,23 +93,31 @@ fwd=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
 
 echo ""
 
-# 5. Firewall
-echo -e "${BOLD}5. Firewall:${NC}"
+# 5. Firewall y Port Hopping
+echo -e "${BOLD}5. Firewall y Port Hopping:${NC}"
 if [[ -n "$LISTEN_PORT" ]]; then
     if iptables -L INPUT -n 2>/dev/null | grep -q "dpt:${LISTEN_PORT}"; then
-        ok "Puerto $LISTEN_PORT abierto en iptables INPUT"
+        ok "Puerto base $LISTEN_PORT abierto en iptables INPUT"
     else
-        warn "Puerto $LISTEN_PORT no encontrado en iptables INPUT — verifica el firewall"
+        warn "Puerto base $LISTEN_PORT no encontrado en iptables INPUT"
+    fi
+    if iptables -t nat -L PREROUTING -n 2>/dev/null | grep -q "dpts:20000:50000"; then
+        ok "Port Hopping 20000-50000 activo (DNAT REDIRECT)"
+    else
+        warn "Port Hopping no activo en iptables nat — agrega: iptables -t nat -A PREROUTING -p udp --dport 20000:50000 -j REDIRECT --to-port $LISTEN_PORT"
     fi
 fi
 
 echo ""
 
-# 6. Certificados
-echo -e "${BOLD}6. Certificados SSL:${NC}"
-if [[ -f /etc/hysteria/hysteria.server.crt && -f /etc/hysteria/hysteria.server.key ]]; then
-    EXPIRY=$(openssl x509 -enddate -noout -in /etc/hysteria/hysteria.server.crt 2>/dev/null | cut -d= -f2)
-    ok "Certificado existe — expira: $EXPIRY"
+# 6. Certificados SSL (crisudp.ca.crt)
+echo -e "${BOLD}6. Certificados SSL (crisudp):${NC}"
+if [[ -f /etc/hysteria/crisudp.server.crt || -f /etc/hysteria/hysteria.server.crt ]]; then
+    CERT_FILE="/etc/hysteria/crisudp.server.crt"
+    [[ ! -f "$CERT_FILE" ]] && CERT_FILE="/etc/hysteria/hysteria.server.crt"
+    EXPIRY=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+    ok "Certificado $CERT_FILE existe — expira: $EXPIRY"
+    [[ -f /etc/hysteria/crisudp.ca.crt ]] && ok "Certificado raíz crisudp.ca.crt presente"
 else
     fail "Certificados no encontrados en /etc/hysteria/ — ejecuta install_udp.sh"
 fi

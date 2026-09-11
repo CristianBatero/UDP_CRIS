@@ -584,8 +584,8 @@ tpl_etc_hysteria_config_json() {
 {
   "listen": "$UDP_PORT",
   "protocol": "$PROTOCOL",
-  "cert": "/etc/hysteria/hysteria.server.crt",
-  "key": "/etc/hysteria/hysteria.server.key",
+  "cert": "/etc/hysteria/crisudp.server.crt",
+  "key": "/etc/hysteria/crisudp.server.key",
   "up": "$UP_MBPS Mbps",
   "up_mbps": $UP_MBPS,
   "down": "$DOWN_MBPS Mbps",
@@ -598,7 +598,12 @@ tpl_etc_hysteria_config_json() {
   "idle_timeout": $IDLE_TIMEOUT,
   "auth": {
     "mode": "passwords",
-    "config": ["$PASSWORD"]
+    "config": [
+      "$PASSWORD",
+      "cris:$PASSWORD",
+      "root:$PASSWORD",
+      "admin:$PASSWORD"
+    ]
   }
 }
 EOF
@@ -930,32 +935,37 @@ perform_check_update() {
 ###
 
 setup_ssl() {
-    echo "Generando certificados SSL para Hysteria V1 ..."
+    echo "Generando certificados SSL para CRIS UDP (crisudp.ca.crt) ..."
 
     mkdir -p "$CONFIG_DIR"
 
-    openssl genrsa -out "$CONFIG_DIR/hysteria.ca.key" 2048
+    openssl genrsa -out "$CONFIG_DIR/crisudp.ca.key" 2048
 
     openssl req -new -x509 -days 3650 \
-        -key "$CONFIG_DIR/hysteria.ca.key" \
-        -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=Hysteria Root CA" \
-        -out "$CONFIG_DIR/hysteria.ca.crt"
+        -key "$CONFIG_DIR/crisudp.ca.key" \
+        -subj "/C=US/ST=CRISDEV/L=CRISDEV/O=CRISDEV Networks, Inc./CN=CRISDEV Root CA" \
+        -out "$CONFIG_DIR/crisudp.ca.crt"
 
     openssl req -newkey rsa:2048 -nodes \
-        -keyout "$CONFIG_DIR/hysteria.server.key" \
-        -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=$DOMAIN" \
-        -out "$CONFIG_DIR/hysteria.server.csr"
+        -keyout "$CONFIG_DIR/crisudp.server.key" \
+        -subj "/C=US/ST=CRISDEV/L=CRISDEV/O=CRISDEV Networks, Inc./CN=$DOMAIN" \
+        -out "$CONFIG_DIR/crisudp.server.csr"
 
     openssl x509 -req \
         -extfile <(printf "subjectAltName=DNS:%s,IP:%s" "$DOMAIN" "$(hostname -I | awk '{print $1}')") \
         -days 3650 \
-        -in "$CONFIG_DIR/hysteria.server.csr" \
-        -CA "$CONFIG_DIR/hysteria.ca.crt" \
-        -CAkey "$CONFIG_DIR/hysteria.ca.key" \
+        -in "$CONFIG_DIR/crisudp.server.csr" \
+        -CA "$CONFIG_DIR/crisudp.ca.crt" \
+        -CAkey "$CONFIG_DIR/crisudp.ca.key" \
         -CAcreateserial \
-        -out "$CONFIG_DIR/hysteria.server.crt"
+        -out "$CONFIG_DIR/crisudp.server.crt"
 
-    echo "Certificados SSL generados correctamente."
+    # Compatibilidad con clientes antiguos / symlinks
+    cp -f "$CONFIG_DIR/crisudp.ca.crt" "$CONFIG_DIR/hysteria.ca.crt" 2>/dev/null || true
+    cp -f "$CONFIG_DIR/crisudp.server.crt" "$CONFIG_DIR/hysteria.server.crt" 2>/dev/null || true
+    cp -f "$CONFIG_DIR/crisudp.server.key" "$CONFIG_DIR/hysteria.server.key" 2>/dev/null || true
+
+    echo "Certificados SSL (crisudp.ca.crt) generados correctamente."
 }
 
 
@@ -1054,35 +1064,45 @@ setup_firewall() {
     local PORT_NUM
     PORT_NUM="${UDP_PORT#:}"
 
-    # ── Reglas IPv4 ─────────────────────────────────────────────────────
-    # Aceptar tráfico UDP en el puerto de Hysteria directamente
-    # NO se usa DNAT masivo — Hysteria escucha directo en $UDP_PORT
-    iptables -A INPUT -p udp --dport "$PORT_NUM" -j ACCEPT
-    iptables -A INPUT -p tcp --dport "$PORT_NUM" -j ACCEPT   # por si PROTOCOL=faketcp
+    # Helper para evitar reglas duplicadas
+    _add_filter() { iptables -C "$@" 2>/dev/null || iptables -A "$@"; }
+    _add_nat()    { iptables -t nat -C "$@" 2>/dev/null || iptables -t nat -A "$@"; }
+    _add_ip6()    { ip6tables -C "$@" 2>/dev/null || ip6tables -A "$@"; }
 
-    # Permitir tráfico de retorno (conexiones establecidas)
-    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    # ── Reglas IPv4 (SOLO UDP — NO afecta servicios TCP como SSL/Stunnel/Nginx en 443) ──
+    _add_filter INPUT -p udp --dport "$PORT_NUM" -j ACCEPT
+    _add_filter INPUT -p tcp --dport "$PORT_NUM" -j ACCEPT   # por si PROTOCOL=faketcp
 
-    # ── Reglas IPv6 (solo el puerto específico) ──────────────────────────
-    ip6tables -A INPUT -p udp --dport "$PORT_NUM" -j ACCEPT
-    ip6tables -A INPUT -p tcp --dport "$PORT_NUM" -j ACCEPT
-    ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    # Redirección Multi-Puerto para Port Hopping (20000-50000)
+    _add_nat PREROUTING -p udp --dport 20000:50000 -j REDIRECT --to-port "$PORT_NUM"
+    _add_filter INPUT -p udp --dport 20000:50000 -j ACCEPT
+
+    # Redirección de Puertos Prioritarios QoS (SOLO UDP: 443, 53, 123, 4500)
+    _add_nat PREROUTING -p udp --dport 443 -j REDIRECT --to-port "$PORT_NUM"
+    _add_filter INPUT -p udp --dport 443 -j ACCEPT
+
+    _add_nat PREROUTING -p udp --dport 53 -j REDIRECT --to-port "$PORT_NUM"
+    _add_filter INPUT -p udp --dport 53 -j ACCEPT
+
+    _add_nat PREROUTING -p udp --dport 123 -j REDIRECT --to-port "$PORT_NUM"
+    _add_filter INPUT -p udp --dport 123 -j ACCEPT
+
+    _add_nat PREROUTING -p udp --dport 4500 -j REDIRECT --to-port "$PORT_NUM"
+    _add_filter INPUT -p udp --dport 4500 -j ACCEPT
+
+    # Permitir tráfico de retorno
+    _add_filter INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+    # ── Reglas IPv6 ──────────────────────────────────────────────────────
+    _add_ip6 INPUT -p udp --dport "$PORT_NUM" -j ACCEPT
+    _add_ip6 INPUT -p tcp --dport "$PORT_NUM" -j ACCEPT
+    _add_ip6 INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
     # Persistir
     iptables-save > /etc/iptables/rules.v4
     ip6tables-save > /etc/iptables/rules.v6
 
-    echo "Firewall configurado: puerto UDP/TCP $PORT_NUM abierto."
-
-    # ── Nota sobre port hopping ──────────────────────────────────────────
-    note "Si la app usa port hopping (rango de puertos), agrega las reglas DNAT necesarias:"
-    echo ""
-    echo -e "\t$(tblue)# Ejemplo: rango 40000-50000 → $PORT_NUM$(treset)"
-    echo -e "\t$(tblue)RANGE_START=40000$(treset)"
-    echo -e "\t$(tblue)RANGE_END=50000$(treset)"
-    echo -e "\t$(tblue)iptables -t nat -A PREROUTING -p udp --dport \${RANGE_START}:\${RANGE_END} -j REDIRECT --to-port $PORT_NUM$(treset)"
-    echo ""
-    note "Con port hopping RECOMENDAMOS hop_interval >= 30s en la app para evitar pérdida por cambio de puerto durante RTT alto."
+    echo "Firewall configurado de forma segura: UDP $PORT_NUM + rango 20000-50000 + QoS activos (TCP intacto)."
 }
 
 
@@ -1119,28 +1139,31 @@ print_install_summary() {
 
     echo
     echo -e "$(tbold)════════════════════════════════════════════════════════$(treset)"
-    echo -e "$(tbold)  CRISDEV-UDP instalado correctamente en su servidor   $(treset)"
+    echo -e "$(tbold)  CRISDEV-UDP v2.0 instalado correctamente en su VPS   $(treset)"
     echo -e "$(tbold)════════════════════════════════════════════════════════$(treset)"
     echo
     echo -e "$(tbold)Configuración del servidor:$(treset)"
-    echo -e "  Protocolo: $(tgreen)$PROTOCOL$(treset)"
-    echo -e "  Puerto:    $(tgreen)$PORT_NUM$(treset)"
-    echo -e "  OBFS:      $(tgreen)$OBFS$(treset)"
-    echo -e "  Contraseña:$(tgreen)$PASSWORD$(treset)"
-    echo -e "  Up/Down:   $(tgreen)${UP_MBPS}/${DOWN_MBPS} Mbps$(treset)"
+    echo -e "  Protocolo:    $(tgreen)$PROTOCOL$(treset)"
+    echo -e "  Puerto Base:  $(tgreen)$PORT_NUM$(treset)"
+    echo -e "  Port Hopping: $(tgreen)20000-50000$(treset) (Bypass anti-throttling activo)"
+    echo -e "  Puertos QoS:  $(tgreen)53, 443, 123, 4500$(treset)"
+    echo -e "  Certificado:  $(tgreen)/etc/hysteria/crisudp.ca.crt$(treset)"
+    echo -e "  OBFS:         $(tgreen)$OBFS$(treset)"
+    echo -e "  Contraseña:   $(tgreen)$PASSWORD$(treset) (Soporte dual usuario:pass)"
+    echo -e "  Up/Down:      $(tgreen)${UP_MBPS}/${DOWN_MBPS} Mbps$(treset)"
     echo
-    echo -e "$(tbold)Configuración de la App (CRISDEV Tunnel):$(treset)"
+    echo -e "$(tbold)Configuración de la App (CRISDEV Tunnel / UDPCris.java):$(treset)"
     echo -e "  Servidor:     $(tblue)IP_DEL_VPS$(treset)"
-    echo -e "  Puerto/Rango: $(tblue)$PORT_NUM$(treset)  (o rango ej. 40000-50000 para port hopping)"
+    echo -e "  Puerto/Rango: $(tblue)20000-50000$(treset) (o $PORT_NUM / 443 / 53)"
     echo -e "  OBFS:         $(tblue)$OBFS$(treset)"
-    echo -e "  Contraseña:   $(tblue)$PASSWORD$(treset)"
-    echo -e "  UDP Up Mbps:  $(tblue)$UP_MBPS$(treset)  ← IMPORTANTE: mismo valor que el servidor"
-    echo -e "  UDP Down Mbps:$(tblue)$DOWN_MBPS$(treset)  ← IMPORTANTE: mismo valor que el servidor"
-    echo -e "  UDP Buffer:   $(tblue)8388608$(treset)  (8 MB — valor por defecto óptimo)"
-    echo -e "  Versión:      $(tblue)v1$(treset)  (libfarikudp.so)"
+    echo -e "  Usuario/Pass: $(tblue)cris / $PASSWORD$(treset)"
+    echo -e "  UDP Up Mbps:  $(tblue)$UP_MBPS$(treset)"
+    echo -e "  UDP Down Mbps:$(tblue)$DOWN_MBPS$(treset)"
+    echo -e "  UDP Buffer:   $(tblue)8388608$(treset) (8 MB)"
+    echo -e "  Motor:        $(tblue)CRIS UDP / libudpcris.so$(treset)"
     echo
     echo -e "$(tbold)Cliente app:$(treset)"
-    echo -e "$(tblue)https://play.google.com/store/apps/details?id=com.cridev.hwt$(treset)"
+    echo -e "$(tblue)https://play.google.com/store/apps/details?id=com.doriaxvpn.unlimited$(treset)"
     echo
     echo -e "Sígueme:"
     echo -e "\t+ Sitio Web $(tblue)https://cripdev.ml$(treset)"

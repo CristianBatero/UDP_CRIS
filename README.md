@@ -1,23 +1,29 @@
-# CRISDEV-UDP v2.0 — Instalador Hysteria V1 para VPS
+# CRISDEV-UDP v2.0 — Servidor y Motor Propietario para VPS
 
-Script de instalación automática del servidor **UDP Hysteria V1** optimizado para
-máxima estabilidad con la app **CRISDEV Tunnel** y el motor `libfarikudp.so`.
-
----
-
-## ¿Qué incluye esta versión v2.0?
-
-- ✅ Config servidor sincronizado con `UDPTunnel.java` (recv_window, idle_timeout, bandwidth)
-- ✅ Servicio systemd con `Restart=always` y `LimitNOFILE=1048576`
-- ✅ Parámetros del kernel optimizados para QUIC/BBR (sin sobreescribir sysctl.conf)
-- ✅ Buffers UDP del kernel de 64 MB para alto rendimiento
-- ✅ Firewall limpio — solo abre el puerto necesario, sin DNAT masivo
-- ✅ Certificados SSL autofirmados con SAN correcto
-- ✅ Resumen de instalación con valores exactos para configurar la app
+Script de instalación y optimización automática del servidor **CRIS UDP (QUIC)** diseñado para máxima velocidad, bypass de limitaciones de operadoras móviles (LTE/4G/5G) y estabilidad absoluta con la app **CRISDEV Tunnel** y los motores `UDPCris.java` / `libudpcris.so`.
 
 ---
 
-## Instalación rápida en el VPS
+## 🚀 Novedades y Mejoras de la Versión v2.0
+
+- ✅ **Certificados Unificados:** Generación nativa de `crisudp.ca.crt` (10 años de validez) sin errores de cadena TLS.
+- ✅ **Bypass de Throttling por Operadora:** Redirección automática de rango Multi-Puerto (`20000-50000`) para Port Hopping cada 30 segundos.
+- ✅ **Puertos Prioritarios QoS:** Puertos `443` (HTTPS/QUIC), `53` (DNS), `123` (NTP) y `4500` (VoLTE) abiertos y redirigidos para máxima prioridad en torres celulares.
+- ✅ **Autenticación Dual Sincronizada:** Soporte para contraseñas maestras y credenciales en formato `usuario:contraseña`.
+- ✅ **Optimización de Kernel:** 64 MB de buffers UDP (`rmem_max`/`wmem_max`), disciplina de colas `fq` + `bbr` y conntrack UDP extendido.
+- ✅ **Servicio de Alta Resiliencia:** `Restart=always`, `RestartSec=5s`, `LimitNOFILE=1048576` y `OOMScoreAdjust=-100`.
+
+---
+
+## ⚡ Instalación Rápida en el VPS
+
+En un solo comando:
+
+```bash
+bash <(wget -qO- https://github.com/CristianBatero/UDP_CRIS/raw/main/install_udp.sh)
+```
+
+O paso a paso:
 
 ```bash
 wget https://github.com/CristianBatero/UDP_CRIS/raw/main/install_udp.sh
@@ -25,90 +31,59 @@ chmod +x install_udp.sh
 ./install_udp.sh
 ```
 
-O en un solo comando:
-
-```bash
-bash <(wget -qO- https://github.com/CristianBatero/UDP_CRIS/raw/main/install_udp.sh)
-```
-
 ---
 
-## Configuración antes de instalar
+## ⚙️ Parámetros de Configuración del Servidor
 
-Edita las variables al inicio del script según tu servidor:
+Variables principales en `install_udp.sh`:
 
-```bash
-nano install_udp.sh
-```
-
-| Variable | Default | Descripción |
+| Variable | Valor por Defecto | Descripción |
 |---|---|---|
-| `DOMAIN` | `ip.crispdev.online` | IP o dominio de tu VPS |
-| `UDP_PORT` | `:36712` | Puerto de escucha del servidor |
-| `OBFS` | `crisdev` | Clave de ofuscación — debe coincidir con la app |
-| `PASSWORD` | `crisdev` | Contraseña de autenticación |
-| `UP_MBPS` | `100` | Ancho de banda de subida real del VPS |
-| `DOWN_MBPS` | `100` | Ancho de banda de bajada real del VPS |
-
-> **⚠️ IMPORTANTE:** `UP_MBPS` y `DOWN_MBPS` deben coincidir con los valores configurados
-> en la app. Si el cliente declara más que el servidor → inestabilidad por BBR collapse.
+| `DOMAIN` | `ip.crispdev.online` | IP o dominio de tu servidor VPS |
+| `UDP_PORT` | `:36712` | Puerto base de escucha del daemon |
+| `OBFS` | `crisdev` | Clave de ofuscación XOR anti-DPI |
+| `PASSWORD` | `crisdev` | Contraseña predeterminada |
+| `UP_MBPS` | `100` | Ancho de banda de subida declarado |
+| `DOWN_MBPS` | `100` | Ancho de banda de bajada declarado |
 
 ---
 
-## Configuración de la app CRISDEV Tunnel
+## 📱 Configuración en la App Android (CRISDEV Tunnel)
 
-Tras instalar, configura la app con estos valores:
+Para conectar con el nuevo motor **CRIS UDP (`UDPCris.java`)**:
 
-| Campo | Valor |
+| Parámetro | Valor Recomendado |
 |---|---|
-| Servidor | IP de tu VPS |
-| Puerto | `36712` (o el que configuraste) |
-| OBFS | `crisdev` |
-| Contraseña | `crisdev` |
-| UDP Up Mbps | `100` |
-| UDP Down Mbps | `100` |
-| UDP Buffer | `8388608` (8 MB) |
-| Versión | `v1` |
+| **Servidor** | IP de tu VPS |
+| **Puerto o Rango** | `20000-50000` (o directo `36712`, `443`, `53`) |
+| **Protocolo** | `CRIS UDP` (`libudpcris.so` / `libfarikudp.so`) |
+| **OBFS** | `crisdev` |
+| **Usuario / Pass** | Tu usuario y contraseña (o solo contraseña) |
+| **UDP Up Mbps** | `100` |
+| **UDP Down Mbps** | `100` |
+| **UDP Buffer** | `8388608` (8 MB) |
 
 ---
 
-## Comandos de gestión del servidor
+## 🛠️ Comandos de Gestión y Diagnóstico
 
 ```bash
-# Ver estado
+# Ver estado del servicio
 systemctl status hysteria-server
 
 # Ver logs en tiempo real
 journalctl -u hysteria-server -f
 
-# Reiniciar
+# Reiniciar el servicio
 systemctl restart hysteria-server
 
-# Ver config activa
-cat /etc/hysteria/config.json
-
-# Diagnóstico rápido
+# Ejecutar diagnóstico completo
 bash <(wget -qO- https://github.com/CristianBatero/UDP_CRIS/raw/main/check_udp.sh)
 ```
 
 ---
 
-## Port Hopping (puertos múltiples)
-
-Si tu operadora bloquea el puerto fijo, usa un rango en la app (ej. `40000-50000`)
-y agrega la regla DNAT en el servidor:
-
-```bash
-# En el VPS (reemplaza 36712 con tu puerto real):
-iptables -t nat -A PREROUTING -p udp --dport 40000:50000 -j REDIRECT --to-port 36712
-iptables-save > /etc/iptables/rules.v4
-```
-
-La app con v2.0 usa `hop_interval=30s` (antes 10s) para estabilidad en LTE.
-
----
-
-## Desinstalar
+## 🗑️ Desinstalación
 
 ```bash
 ./install_udp.sh --remove
@@ -116,9 +91,8 @@ La app con v2.0 usa `hop_interval=30s` (antes 10s) para estabilidad en LTE.
 
 ---
 
-## Soporte
+## 👥 Soporte y Comunidad
 
-- 📱 App: [CRISDEV Tunnel en Play Store](https://play.google.com/store/apps/details?id=com.cridev.hwt)
-- 💬 Telegram: [t.me/crisis1823](https://t.me/crisis1823)
-- 🌐 Web: [crispdev.online](https://crispdev.online)
-- 🐙 GitHub: [CristianBatero/UDP_CRIS](https://github.com/CristianBatero/UDP_CRIS)
+- 📱 **App Oficial:** [CRISDEV Tunnel en Play Store](https://play.google.com/store/apps/details?id=com.doriaxvpn.unlimited)
+- 💬 **Telegram:** [t.me/crisis1823](https://t.me/crisis1823)
+- 🐙 **Repositorio Oficial:** [CristianBatero/UDP_CRIS](https://github.com/CristianBatero/UDP_CRIS)
